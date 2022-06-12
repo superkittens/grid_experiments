@@ -100,19 +100,18 @@ fn view(_app: &App, _model: &Model, frame: Frame) {
 fn window_event(_app: &App, _model: &mut Model, event: WindowEvent) {
     match event {
         KeyPressed(_key) => { 
-            match _key {
-                Key::F => find_grid(_model),
+            if let Key::F = _key {
+                find_grid(_model)
+            }
 
-                Key::L => {
-                    if _model.led_state == true {
-                        light_all_leds(_model, 1);
-                        _model.led_state = false;
-                    } else {
-                        light_all_leds(_model, 0);
-                        _model.led_state = true;
-                    }
-                },
-                _ => {},
+            if let Key::L = _key {
+                if _model.led_state == true {
+                    light_all_leds(_model, 1);
+                    _model.led_state = false;
+                } else {
+                    light_all_leds(_model, 0);
+                    _model.led_state = true;
+                }
             }
         }
         _ => {}
