@@ -24,11 +24,33 @@ impl MonomeGrid {
     }
 }
 
-struct Model {
+struct SerialOsc {
     sender: osc::Sender<osc::Connected>,
     receiver: osc::Receiver,
     received_packets: Vec<(std::net::SocketAddr, osc::Packet)>,
+}
 
+impl SerialOsc {
+    fn new() -> SerialOsc {
+        let target_addr = format!("{}:{}", "127.0.0.1", MONOME_PORT);
+
+        let sender = osc::sender()
+            .expect("Could not bind to default socket")
+            .connect(target_addr)
+            .expect("Could not connect to socket at address");
+
+        let receiver = osc::receiver(MONOME_RX_PORT).unwrap();
+
+        SerialOsc {
+            sender: sender,
+            receiver: receiver,
+            received_packets: vec![],
+        }
+    }
+}
+
+struct Model {
+    serial_osc: SerialOsc,
     grid: MonomeGrid,
     led_state: bool,
 }
@@ -50,20 +72,8 @@ fn model(app: &App) -> Model {
         .build()
         .unwrap();
 
-    let target_addr = format!("{}:{}", "127.0.0.1", MONOME_PORT);
-
-    let sender = osc::sender()
-            .expect("Could not bind to default socket")
-            .connect(target_addr)
-            .expect("Could not connect to socket at address");
-
-    let receiver = osc::receiver(MONOME_RX_PORT).unwrap();
-    let received_packets = vec![];
-
     Model {
-        sender,
-        receiver,
-        received_packets,
+        serial_osc: SerialOsc::new(),
         grid: MonomeGrid::new(),
         led_state: false,
     }
@@ -77,7 +87,8 @@ fn event(_app: &App, _model: &mut Model, event: Event) {
 
 fn update(_app: &App, _model: &mut Model, _update: Update) {
     get_osc_packets(_model);
-    process_monome_events(_model);
+    process_serialosc_events(_model);
+    process_monome_events(&_model.grid);
 }
 
 
@@ -123,18 +134,20 @@ fn window_event(_app: &App, _model: &mut Model, event: WindowEvent) {
 
 
 fn get_osc_packets(_model: &mut Model) {
-    for (packet, addr) in _model.receiver.try_iter() {
-        _model.received_packets.push((addr, packet));
+    for (packet, addr) in _model.serial_osc.receiver.try_iter() {
+        _model.serial_osc.received_packets.push((addr, packet));
     }
 }
 
 
-fn process_monome_events(_model: &mut Model) {
-    for (socket, packet) in _model.received_packets.iter() {
+fn process_serialosc_events(_model: &mut Model) {
+    for (socket, packet) in _model.serial_osc.received_packets.iter() {
         match packet {
             osc::Packet::Message(msg) => {
+                println!("{:?}", msg.addr);
+
                 if msg.addr.eq("/serialosc/device") {
-                    add_monome_device(&mut _model.grid, msg);
+                    add_monome_device(&_model.serial_osc, &mut _model.grid, msg);
 
                     if let Some(args) = &msg.args {
                         let serial_number = args[0].clone().string().unwrap();
@@ -146,7 +159,24 @@ fn process_monome_events(_model: &mut Model) {
         }
     }
 
-    _model.received_packets.clear();
+    _model.serial_osc.received_packets.clear();
+}
+
+
+fn process_monome_events(grid: &MonomeGrid) {
+    if let Some(receiver) = grid.receiver.as_ref() {
+        for (packet, addr) in receiver.try_iter() {
+            match packet {
+                osc::Packet::Message(msg) => {
+                    if msg.addr.eq("/monome/grid/key") {
+                        println!("Button pressed!");
+                    }
+                },
+
+                _ => {},
+            }
+        }
+    }
 }
 
 
@@ -154,11 +184,11 @@ fn list_monome_devices(_model: &Model) {
     let osc_addr = "/serialosc/list".to_string();
     let args = vec![osc::Type::String("127.0.0.1".to_string()), osc::Type::Int(MONOME_RX_PORT as i32)];
     let packet = (osc_addr, args);
-    _model.sender.send(packet).ok();
+    _model.serial_osc.sender.send(packet).ok();
 }
 
 
-fn add_monome_device(grid: &mut MonomeGrid, msg: &osc::Message) {
+fn add_monome_device(serial_osc: &SerialOsc, grid: &mut MonomeGrid, msg: &osc::Message) {
     match &msg.args {
          Some(args) => { 
             grid.device_in_port = get_monome_listening_port(&args); 
@@ -168,6 +198,16 @@ fn add_monome_device(grid: &mut MonomeGrid, msg: &osc::Message) {
                                             .expect("Could not bind to default socket")
                                             .connect(target_addr)
                                             .expect("Could not connect to socket at address"));
+            
+            //  Set the monome device out port
+            let osc_addr = "/sys/port";
+            let args = vec![osc::Type::Int(grid.device_out_port.clone().unwrap())];
+            if let Some(sender) = grid.sender.as_ref() {
+                sender.send((osc_addr, args)).ok();
+            }
+
+            let receiver_port = grid.device_out_port.clone().unwrap();
+            grid.receiver = Some(osc::receiver(receiver_port as u16).unwrap());
         },
          None => panic!("Invalid /serialosc/device packet"),
     }
